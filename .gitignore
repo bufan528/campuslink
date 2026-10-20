@@ -1,0 +1,13 @@
+.venv/
+build/
+dist/
+__pycache__/
+*.pyc
+.pytest_cache/
+.precheck/
+*.egg-info/
+%SystemDrive%/
+evidence/
+# 本地私有门户配置（绝不提交）
+src/campuslink/auth/endpoints_local.py
+*.log

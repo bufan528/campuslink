@@ -1,0 +1,3 @@
+-r requirements.txt
+pytest>=8,<10              # 单元测试与模拟服务器测试
+pyinstaller>=6.5,<7        # 生成 Windows EXE

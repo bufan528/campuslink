@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "campuslink"
+version = "0.1.0"
+description = "HFUT 校园网自动连接助手（Windows，个人自用）"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "Proprietary-Local" }
+dependencies = [
+    "requests>=2.31,<3",
+    "PySide6-Essentials>=6.6,<7",
+    "pywin32>=306; sys_platform == 'win32'",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8,<10", "pyinstaller>=6.5,<7"]
+
+[project.gui-scripts]
+campuslink = "campuslink.app:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+addopts = "--strict-markers"
+filterwarnings = [
+    "error::DeprecationWarning:campuslink.*",
+]

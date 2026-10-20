@@ -1,0 +1,4 @@
+# CampusLink 运行时依赖（版本为本次开发验证通过的下界附近）
+requests>=2.31,<3          # HTTP 会话、Cookie、表单提交
+PySide6-Essentials>=6.6,<7 # 桌面界面与系统托盘（可用 PySide6 全量包替代）
+pywin32>=306; sys_platform == "win32"   # Windows 凭据管理器（win32cred）
