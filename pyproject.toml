@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "campuslink"
 version = "0.1.0"
-description = "HFUT 校园网自动连接助手（Windows，个人自用）"
+description = "Campus 校园网自动连接助手（Windows，个人自用）"
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "Proprietary-Local" }

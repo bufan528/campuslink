@@ -73,8 +73,23 @@ def test_check_prints_config_warnings(capsys) -> None:
     assert "配置项 portal_host 非法" in capsys.readouterr().out
 
 
-def test_build_context_does_not_require_credentials(tmp_path) -> None:
-    """无配置文件、无凭据时也必须能装配（默认值 + 空凭据存储）。"""
+def test_build_context_does_not_require_credentials(tmp_path, monkeypatch) -> None:
+    """无配置文件、无凭据时也必须能装配（默认值 + 空凭据存储）。
+
+    用内存假实现，避免测试去读本机真实 Windows 凭据。
+    """
+
+    class EmptyStore:
+        def load(self):
+            return None
+
+        def save(self, account, password):
+            return None
+
+        def delete(self):
+            return None
+
+    monkeypatch.setattr("campuslink.app.WindowsCredentialStore", lambda: EmptyStore())
     ctx = build_context(tmp_path / "missing.json")
     assert ctx.settings == AppSettings()
     assert ctx.gateway.load_credentials() is None

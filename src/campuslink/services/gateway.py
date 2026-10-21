@@ -21,7 +21,7 @@ from ..auth.models import AuthAttempt, AuthOutcome, PortalState
 from ..config.settings import AppSettings
 from ..logging_setup.logger import get_logger
 from ..logging_setup.redact import DEFAULT_REDACTOR, Redactor, mask_account
-from ..network.probe import ConnectivityProbe
+from ..network.probe import ConnectivityProbe, ProbeResult
 from ..network.status import (
     LinkState,
     NetworkSnapshot,
@@ -139,9 +139,15 @@ class AuthGateway:
         password: str | None = None,
         *,
         save_credentials: bool = False,
+        force_reauth: bool = False,
     ) -> SignInReport:
         with self._lock:
-            return self._sign_in_locked(account, password, save_credentials=save_credentials)
+            return self._sign_in_locked(
+                account,
+                password,
+                save_credentials=save_credentials,
+                force_reauth=force_reauth,
+            )
 
     def _sign_in_locked(
         self,
@@ -149,6 +155,7 @@ class AuthGateway:
         password: str | None,
         *,
         save_credentials: bool,
+        force_reauth: bool = False,
     ) -> SignInReport:
         account, password = self._resolve_credentials(account, password)
         if not account or not password:
@@ -163,10 +170,15 @@ class AuthGateway:
         self._redactor.add(password)
 
         # 先看是否本来就通；通了就不去打扰认证服务器。
-        probe_result = self._probe.check()
+        # force_reauth 是自动重连在“门户在线但外网不可用”时的修复路径，
+        # 此时跳过前置探测（调用方已确认外网不可用），直接强制重认证。
+        if force_reauth:
+            probe_result = ProbeResult(False, False, "强制重新认证：跳过前置探测")
+        else:
+            probe_result = self._probe.check()
         adapter = self._make_adapter()
         try:
-            if probe_result.internet_available:
+            if not force_reauth and probe_result.internet_available:
                 portal_state = adapter.probe_state()
                 if portal_state is PortalState.ONLINE:
                     notice = self._save_credentials(account, password, save_credentials)
@@ -180,7 +192,7 @@ class AuthGateway:
                         attempt, snapshot, LinkState.AUTHENTICATED, notice=notice
                     )
 
-            attempt = adapter.login(account, password)
+            attempt = adapter.login(account, password, force_reauth=force_reauth)
             notice = ""
             if attempt.is_success:
                 notice = self._save_credentials(account, password, save_credentials)

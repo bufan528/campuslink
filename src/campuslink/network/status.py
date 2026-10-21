@@ -69,14 +69,19 @@ class NetworkSnapshot:
 def derive_link_state(snapshot: NetworkSnapshot) -> LinkState:
     """由快照推导界面状态。
 
-    优先看"互联网是否可用"，再看门户怎么说，最后才看 Wi-Fi——
+    判定顺序（重要）：
+    1. 门户明确要求认证 → 必须显示"需要认证"（即使 HTTP 探测碰巧通过，
+       也可能是门户放行了探测地址）；
+    2. 互联网探测通过（默认要求 HTTPS 强证据）→ 认证成功；
+    3. 其余按门户状态区分"未连接 / 互联网不可用 / 未确认"。
+
     这样不会因为没连 Wi-Fi（比如有线）就误报未连接。
     """
     portal = snapshot.portal_state
-    if snapshot.internet_available:
-        return LinkState.AUTHENTICATED
     if portal is PortalState.LOGIN_REQUIRED:
         return LinkState.AUTH_REQUIRED
+    if snapshot.internet_available:
+        return LinkState.AUTHENTICATED
     if portal is PortalState.UNREACHABLE:
         return LinkState.DISCONNECTED if not snapshot.wifi_connected else LinkState.INTERNET_UNAVAILABLE
     if portal is PortalState.ONLINE:

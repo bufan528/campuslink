@@ -101,7 +101,7 @@ def test_is_campus_wifi() -> None:
         (PortalState.UNREACHABLE, False, True, LinkState.INTERNET_UNAVAILABLE),
         (PortalState.UNREACHABLE, True, True, LinkState.AUTHENTICATED),
         (PortalState.UNRECOGNIZED, False, True, LinkState.UNKNOWN),
-        (PortalState.LOGIN_REQUIRED, True, True, LinkState.AUTHENTICATED),
+        (PortalState.LOGIN_REQUIRED, True, True, LinkState.AUTH_REQUIRED),
     ],
 )
 def test_derive_link_state(portal, internet, wifi, expected) -> None:
@@ -172,3 +172,33 @@ def test_probe_falls_through_to_second_endpoint() -> None:
     probe = ConnectivityProbe(PROBES, timeout=1.0, http_get=get)
     assert probe.check().internet_available is True
     assert len(calls) == 2
+
+
+def test_http_204_without_https_is_not_internet() -> None:
+    """门户常放行 generate_204；没有 HTTPS 强证据时不能报"互联网可用"。"""
+    probes = (
+        ("https://secure.example/", 200, None),
+        ("http://portal-allowed.example/generate_204", 204, None),
+    )
+
+    def get(url, **kwargs):
+        if url.startswith("https://"):
+            raise TimeoutError("tls blocked")
+        return _Resp(204)
+
+    probe = ConnectivityProbe(probes, timeout=1.0, http_get=get)
+    result = probe.check()
+    assert result.internet_available is False
+    assert result.portal_interception is True
+    assert "HTTPS" in result.detail
+
+
+def test_https_probe_success_is_strong_evidence() -> None:
+    probes = (("https://secure.example/", 200, None),)
+
+    def get(url, **kwargs):
+        return _Resp(200, b"<html>ok</html>")
+
+    result = ConnectivityProbe(probes, timeout=1.0, http_get=get).check()
+    assert result.internet_available is True
+    assert result.detail.startswith("HTTPS 探测通过")

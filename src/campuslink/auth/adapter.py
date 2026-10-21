@@ -211,9 +211,10 @@ class PortalAuthAdapter:
     def probe_state(self) -> PortalState:
         """判断门户当前状态：需要认证 / 已认证 / 不可识别 / 不可达。
 
-        某些门户在已登录时仍会在登录页渲染登录表单，因此**不能**只用
-        "有没有密码框"判断是否需要认证。这里探测站点根路径：
-        已登录时通常返回状态页（含注销入口），没有密码框。
+        实测发现 /0.htm 即使在已登录时也照样渲染登录表单，因此**不能**用
+        "有没有密码框"判断是否需要认证。真正的状态页是站点根路径 /：
+        已登录时它返回 Dr.COMWebLoginID_1.htm（含注销入口），没有密码框。
+        所以这里探测根路径。
         """
         try:
             response = self._fetch("/")
@@ -235,8 +236,12 @@ class PortalAuthAdapter:
             return PortalState.LOGIN_REQUIRED
         return PortalState.UNRECOGNIZED
 
-    def login(self, account: str, password: str) -> AuthAttempt:
-        """执行一次认证。返回的 AuthAttempt 表明是否真的提交了凭据。"""
+    def login(self, account: str, password: str, *, force_reauth: bool = False) -> AuthAttempt:
+        """执行一次认证。返回的 AuthAttempt 表明是否真的提交了凭据。
+
+        force_reauth=True 用于"门户显示在线但外网不可用"的疑似僵死会话：
+        先尝试注销，再照常提交一次。只应由自动重连在确认外网不可用时调用。
+        """
         if not account or not password:
             return AuthAttempt(
                 outcome=AuthOutcome.UNKNOWN,
@@ -244,17 +249,25 @@ class PortalAuthAdapter:
                 submitted=False,
             )
 
-        # 0) 先看根路径状态：有些门户在已登录时仍会在登录页渲染登录表单，
-        #    因此“登录页有密码框”不能证明需要认证。此前只有 gateway 在
-        #    联网探测成功时才做这个判断；适配器被直接调用时仍会重复提交。
-        #    （重新登录可能导致已有会话被踢下线，因此这里补一道前置检查。）
-        portal_state = self.probe_state()
-        if portal_state is PortalState.ONLINE:
-            return AuthAttempt(
-                outcome=AuthOutcome.ALREADY_ONLINE,
-                message="门户根路径显示当前已在线，未重复提交认证。",
-                submitted=False,
-            )
+        if force_reauth:
+            # 僵死会话可能仍被门户记为在线；先注销再重新登录，避免直接
+            # 提交被“已在线”逻辑挡掉。注销结果不参与最终判定。
+            try:
+                self.logout()
+            except CampusLinkError:
+                pass
+        else:
+            # 0) 先看根路径状态：真实门户在已登录时仍会在 /0.htm 渲染登录表单，
+            #    因此“登录页有密码框”不能证明需要认证。此前只有 gateway 在
+            #    联网探测成功时才做这个判断；适配器被直接调用时仍会重复提交，
+            #    而单位明确“后登录者会把先登录者踢下线”。这里补一道前置检查。
+            portal_state = self.probe_state()
+            if portal_state is PortalState.ONLINE:
+                return AuthAttempt(
+                    outcome=AuthOutcome.ALREADY_ONLINE,
+                    message="门户根路径显示当前已在线，未重复提交认证。",
+                    submitted=False,
+                )
 
         # 1) 取页面
         try:

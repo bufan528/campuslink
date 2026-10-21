@@ -14,7 +14,7 @@ import threading
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
-from ..auth.models import AuthOutcome
+from ..auth.models import AuthOutcome, PortalState
 from ..logging_setup.logger import get_logger
 from ..network.reconnect import BackoffController, BackoffPolicy
 from ..network.status import LinkState
@@ -25,7 +25,14 @@ _log = get_logger("services.reconnect")
 class GatewayLike(Protocol):
     def current_state(self): ...
 
-    def sign_in(self, account=None, password=None, *, save_credentials: bool = False): ...
+    def sign_in(
+        self,
+        account=None,
+        password=None,
+        *,
+        save_credentials: bool = False,
+        force_reauth: bool = False,
+    ): ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,6 +68,7 @@ class ReconnectSupervisor:
         self._on_state = on_state
         self._last: TickOutcome | None = None
         self._poll_interval_s = poll_interval_s
+        self._last_health: tuple | None = None
 
     @property
     def controller(self) -> BackoffController:
@@ -98,6 +106,64 @@ class ReconnectSupervisor:
     def _stopped_or_paused(self) -> bool:
         return self._controller.paused or self._controller.state == "stopped"
 
+    def _note_health(self, state: LinkState, snapshot) -> None:
+        """只在状态变化时写日志，方便事后定位“为什么没自动登录”。"""
+        signature = (
+            state.value,
+            getattr(snapshot, "portal_state", None),
+            getattr(snapshot, "internet_available", None),
+            getattr(snapshot, "wifi_connected", None),
+        )
+        if signature == self._last_health:
+            return
+        self._last_health = signature
+        _log.info(
+            "自动重连检测 state=%s portal=%s internet=%s wifi=%s detail=%s",
+            state.value,
+            getattr(getattr(snapshot, "portal_state", None), "value", "-"),
+            getattr(snapshot, "internet_available", "-"),
+            getattr(snapshot, "wifi_connected", "-"),
+            getattr(snapshot, "detail", ""),
+        )
+
+    def _finish_with_report(self, report) -> TickOutcome:
+        if report.state is LinkState.AUTHENTICATED:
+            self._controller.record_success()
+            return self._emit(
+                TickOutcome(
+                    report.state,
+                    report.attempt.submitted,
+                    self._poll_delay(),
+                    report.message,
+                )
+            )
+        if not report.attempt.submitted and report.attempt.outcome is AuthOutcome.UNKNOWN:
+            # 多半是没保存凭据（或凭据为空）。这不是“重试失败”，
+            # 不能消耗退避预算，否则用户永远等不到手动登录的机会。
+            return self._emit(
+                TickOutcome(
+                    report.state,
+                    False,
+                    self._poll_delay(),
+                    "未提交凭据：" + report.message + "（请手动登录或检查保存的凭据）",
+                )
+            )
+        still_allowed = self._controller.record_failure()
+        delay = self._controller.next_delay() if still_allowed else None
+        _log.info(
+            "自动重连失败 attempt=%s exhausted=%s",
+            self._controller.failures,
+            self._controller.exhausted,
+        )
+        return self._emit(
+            TickOutcome(
+                report.state,
+                report.attempt.submitted,
+                delay,
+                "重连未成功：" + report.message,
+            )
+        )
+
     def _emit(self, outcome: TickOutcome) -> TickOutcome:
         self._last = outcome
         if self._on_state is not None:
@@ -126,7 +192,8 @@ class ReconnectSupervisor:
                 TickOutcome(LinkState.UNKNOWN, False, None, "已达失败次数上限，等待手动操作")
             )
 
-        state, _snapshot = self._gateway.current_state()
+        state, snapshot = self._gateway.current_state()
+        self._note_health(state, snapshot)
         if self._stopped_or_paused():
             return self._emit(
                 TickOutcome(LinkState.UNKNOWN, False, self._poll_delay(), "自动重连已暂停/停止")
@@ -149,32 +216,25 @@ class ReconnectSupervisor:
                 return self._emit(
                     TickOutcome(LinkState.UNKNOWN, False, self._poll_delay(), "自动重连已暂停/停止")
                 )
-            if report.state is LinkState.AUTHENTICATED:
-                self._controller.record_success()
+            return self._finish_with_report(report)
+
+        if (
+            state is LinkState.INTERNET_UNAVAILABLE
+            and getattr(snapshot, "portal_state", None) is PortalState.ONLINE
+        ):
+            # 典型隔夜场景：门户仍把旧会话当作“在线”，但实际外网已断。
+            # 仅等待永远不会恢复，必须强制注销后重新提交一次认证。
+            if self._stopped_or_paused():
                 return self._emit(
-                    TickOutcome(report.state, report.attempt.submitted, self._poll_delay(), report.message)
+                    TickOutcome(LinkState.UNKNOWN, False, self._poll_delay(), "自动重连已暂停/停止")
                 )
-            if not report.attempt.submitted and report.attempt.outcome is AuthOutcome.UNKNOWN:
-                # 多半是没保存凭据（或凭据为空）。这不是“重试失败”，
-                # 不能消耗退避预算，否则用户永远等不到手动登录的机会。
+            _log.info("门户在线但外网不可用，尝试强制重新认证")
+            report = self._gateway.sign_in(force_reauth=True)
+            if self._stopped_or_paused():
                 return self._emit(
-                    TickOutcome(
-                        report.state,
-                        False,
-                        self._poll_delay(),
-                        "未提交凭据：" + report.message + "（请手动登录或检查保存的凭据）",
-                    )
+                    TickOutcome(LinkState.UNKNOWN, False, self._poll_delay(), "自动重连已暂停/停止")
                 )
-            still_allowed = self._controller.record_failure()
-            delay = self._controller.next_delay() if still_allowed else None
-            _log.info(
-                "自动重连失败 attempt=%s exhausted=%s",
-                self._controller.failures,
-                self._controller.exhausted,
-            )
-            return self._emit(
-                TickOutcome(report.state, report.attempt.submitted, delay, "重连未成功：" + report.message)
-            )
+            return self._finish_with_report(report)
 
         # 未连接 / 主机不可达 / 页面不符预期 / 结果未确认：不提交凭据，只等下一轮。
         return self._emit(

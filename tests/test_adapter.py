@@ -200,6 +200,27 @@ def test_malformed_post_redirect_is_refused(fake_transport) -> None:
     assert attempt.submitted is True
 
 
+def test_force_reauth_bypasses_online_probe_and_submits(fake_transport) -> None:
+    """强制重认证：门户仍显示在线时也要注销并重新提交。"""
+
+    def route(url: str):
+        if url.endswith("/F.htm"):
+            return response(200, LOGOUT_OK_HTML.encode("utf-8"))
+        if url.endswith(":80/"):
+            return response(200, ONLINE_HTML.encode("utf-8"))
+        return response(200, LOGIN_HTML.encode("utf-8"))
+
+    transport = fake_transport(
+        get=route,
+        post=lambda url, data: response(200, "认证成功".encode("utf-8")),
+    )
+    attempt = make(transport).login(ACCOUNT, PASSWORD, force_reauth=True)
+    assert attempt.outcome is AuthOutcome.SUCCESS
+    assert attempt.submitted is True
+    assert len(transport.post_calls) == 1
+    assert any(url.endswith("/F.htm") for url in transport.get_urls)
+
+
 def test_real_portal_shape_already_online_skips_submission(fake_transport) -> None:
     """真实门户在线时 /0.htm 仍是登录表单，必须靠根路径判断，不能再提交。"""
 

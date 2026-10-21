@@ -34,13 +34,24 @@ class FakeGateway:
         self.report = report or make_report(AuthOutcome.SUCCESS, LinkState.AUTHENTICATED)
         self.survey_calls = 0
         self.sign_in_calls = 0
+        self.force_calls = 0
+        self.snapshot = SNAPSHOT
 
     def current_state(self):
         self.survey_calls += 1
-        return (self.state, SNAPSHOT)
+        return (self.state, self.snapshot)
 
-    def sign_in(self, account=None, password=None, *, save_credentials: bool = False):
+    def sign_in(
+        self,
+        account=None,
+        password=None,
+        *,
+        save_credentials: bool = False,
+        force_reauth: bool = False,
+    ):
         self.sign_in_calls += 1
+        if force_reauth:
+            self.force_calls += 1
         return self.report
 
 
@@ -54,6 +65,24 @@ def test_online_state_does_not_submit() -> None:
     assert outcome.attempted is False
     assert gateway.sign_in_calls == 0
     assert outcome.next_delay_s is not None
+
+
+def test_stale_online_portal_triggers_forced_reauth() -> None:
+    """门户在线但外网不可用 = 僵死会话，必须强制注销重登而不是干等。"""
+    snapshot = NetworkSnapshot(
+        wifi_connected=True,
+        wifi_ssid="campus-wlan",
+        portal_state=PortalState.ONLINE,
+        internet_available=False,
+        portal_interception=True,
+        checked_at=0.0,
+    )
+    gateway = FakeGateway(LinkState.INTERNET_UNAVAILABLE)
+    gateway.snapshot = snapshot
+    outcome = ReconnectSupervisor(gateway, policy()).tick()
+    assert gateway.force_calls == 1
+    assert outcome.attempted is True
+    assert outcome.state is LinkState.AUTHENTICATED
 
 
 def test_auth_required_triggers_login() -> None:

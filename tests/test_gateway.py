@@ -236,6 +236,27 @@ def test_partial_manual_credentials_are_not_mixed_with_store() -> None:
     assert "未提供" in report.message
 
 
+def test_force_reauth_skips_already_online_shortcut() -> None:
+    """自动重连在“门户在线但外网不可用”时强制重认证，不能被在线捷径挡掉。"""
+
+    def route(url: str):
+        if url.endswith("/F.htm"):
+            return response(200, LOGOUT_OK_HTML.encode("utf-8"))
+        if url.endswith(":80/"):
+            return response(200, ONLINE_HTML.encode("utf-8"))
+        return response(200, LOGIN_HTML.encode("utf-8"))
+
+    transport = FakeTransport(
+        get=route,
+        post=lambda url, data: response(200, "认证成功".encode("utf-8")),
+    )
+    gateway = make_gateway(transport, FakeProbe(ok(True)))
+    report = gateway.sign_in(ACCOUNT, PASSWORD, force_reauth=True)
+    assert report.attempt.outcome is AuthOutcome.SUCCESS
+    assert report.attempt.submitted is True
+    assert len(transport.post_calls) == 1
+
+
 def test_report_never_contains_credentials() -> None:
     transport = FakeTransport(
         get=page_router(),
